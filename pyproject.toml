@@ -3,20 +3,15 @@ name = "test-speed-scalesweep"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = ">=3.12"
-dependencies = [
-    "torch==2.13.0",
-    "vllm==0.29.0",
+authors = [
+    { name = "efsotr", email = "205368424@qq.com" }
 ]
+requires-python = ">=3.12"
+dependencies = []
 
-[[tool.uv.index]]
-name = "vllm-cu129"
-url = "https://wheels.vllm.ai/0.29.0/cu129"
+[project.scripts]
+test-speed-scalesweep = "test_speed_scalesweep:main"
 
-[[tool.uv.index]]
-url = "https://pypi.tuna.tsinghua.edu.cn/simple"
-default = true
-
-[[tool.uv.index]]
-name = "pytorch-cu126"
-url = "https://download.pytorch.org/whl/cu126"
+[build-system]
+requires = ["uv_build>=0.12.11,<0.13.0"]
+build-backend = "uv_build"

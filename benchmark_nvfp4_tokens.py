@@ -22,7 +22,7 @@ from typing import Any
 # These must be set before importing vllm.
 os.environ.setdefault("VLLM_ENABLE_V1_MULTIPROCESSING", "0")
 os.environ.setdefault("VLLM_WORKER_MULTIPROC_METHOD", "fork")
-
+os.environ.setdefault("CUDA_MODULE_LOADING", "LAZY")
 
 class LogStream:
     """Write a text stream to a log file without echoing to the terminal."""

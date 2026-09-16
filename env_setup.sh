@@ -1,0 +1,2 @@
+uv add torch==2.13.0 --default-index https://pypi.tuna.tsinghua.edu.cn/simple --index pytorch-cu129=https://download.pytorch.org/whl/cu129
+uv add vllm==0.29.0 --default-index https://pypi.tuna.tsinghua.edu.cn/simple --index vllm-cu129=https://wheels.vllm.ai/0.29.0/cu129 --index-strategy unsafe-best-match

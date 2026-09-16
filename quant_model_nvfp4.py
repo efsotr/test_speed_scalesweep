@@ -13,6 +13,8 @@ from pathlib import Path
 
 # Set this before importing torch/transformers/llmcompressor.
 os.environ.setdefault("CUDA_MODULE_LOADING", "LAZY")
+os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
+
 
 from llmcompressor import oneshot
 from llmcompressor.modifiers.quantization import QuantizationModifier

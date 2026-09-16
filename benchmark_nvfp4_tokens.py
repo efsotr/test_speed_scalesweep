@@ -389,9 +389,25 @@ def main() -> None:
 
     requests = sample_requests(args.num_requests, args.seed)
     warmup_requests = sample_requests(args.warmup_requests, args.seed + 1)
+    # RandomDataset returns text and records its length *without* special
+    # tokens. Passing that text to LLM.generate makes vLLM tokenize it again
+    # with special tokens enabled.  That used to make max_model_len one token
+    # too small for Llama (2047 + 256 instead of 2048 + 256), truncating every
+    # completion by one token.  Tokenize once here and pass token IDs directly
+    # so the planned lengths, vLLM input, and reported metrics are identical.
+    def tokenize_requests(batch: list[Any]) -> list[list[int]]:
+        return [
+            tokenizer.encode(request.prompt, add_special_tokens=True)
+            for request in batch
+        ]
+
+    request_token_ids = tokenize_requests(requests)
+    warmup_token_ids = tokenize_requests(warmup_requests)
+    all_request_token_ids = request_token_ids + warmup_token_ids
     all_requests = requests + warmup_requests
     required_model_len = max(
-        request.prompt_len + request.expected_output_len for request in all_requests
+        len(prompt_token_ids) + request.expected_output_len
+        for request, prompt_token_ids in zip(all_requests, all_request_token_ids)
     )
     max_model_len = args.max_model_len or required_model_len
     if max_model_len < required_model_len:
@@ -421,8 +437,13 @@ def main() -> None:
     print(f"Loading model: {args.model}")
     llm = LLM(**llm_kwargs)
 
-    def prepare_batch(batch: list[Any]) -> tuple[list[str], list[SamplingParams]]:
-        prompts = [request.prompt for request in batch]
+    def prepare_batch(
+        batch: list[Any], batch_token_ids: list[list[int]]
+    ) -> tuple[list[dict[str, list[int]]], list[SamplingParams]]:
+        prompts = [
+            {"prompt_token_ids": prompt_token_ids}
+            for prompt_token_ids in batch_token_ids
+        ]
         sampling_params = [
             SamplingParams(
                 temperature=1.0,
@@ -436,14 +457,16 @@ def main() -> None:
 
     if warmup_requests:
         print(f"Warming up with {args.warmup_requests} request(s)...")
-        warmup_prompts, warmup_sampling = prepare_batch(warmup_requests)
+        warmup_prompts, warmup_sampling = prepare_batch(
+            warmup_requests, warmup_token_ids
+        )
         llm.generate(
             warmup_prompts,
             warmup_sampling,
             use_tqdm=False,
         )
 
-    prompts, sampling_params = prepare_batch(requests)
+    prompts, sampling_params = prepare_batch(requests, request_token_ids)
     torch.cuda.synchronize()
     start = time.perf_counter()
     outputs = llm.generate(prompts, sampling_params, use_tqdm=False)
@@ -456,7 +479,9 @@ def main() -> None:
         for output in outputs
         for completion in output.outputs
     )
-    expected_input_tokens = sum(request.prompt_len for request in requests)
+    expected_input_tokens = sum(
+        len(prompt_token_ids) for prompt_token_ids in request_token_ids
+    )
     expected_output_tokens = sum(request.expected_output_len for request in requests)
     total_tokens = actual_input_tokens + actual_output_tokens
     request_throughput = len(requests) / elapsed

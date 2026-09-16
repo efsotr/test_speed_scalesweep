@@ -2,8 +2,9 @@
 """Offline vLLM throughput benchmark with vLLM-style random inputs.
 
 For NVFP4 models on pre-Blackwell GPUs, the runtime patch keeps the CUTLASS
-NVFP4 linear path but replaces its unsupported FP4 GEMM with a dequantize plus
-torch.matmul fallback. Non-NVFP4 models run without this patch.
+NVFP4 linear path but bypasses its hardware gate and replaces its unsupported
+FP4 GEMM with a dequantize plus torch.matmul fallback. Non-NVFP4 models run
+without this patch.
 """
 
 from __future__ import annotations
@@ -65,7 +66,7 @@ def model_is_nvfp4(model: str, trust_remote_code: bool) -> bool:
 
 
 def install_pre_blackwell_nvfp4_patch(act_quant_backend: str) -> None:
-    """Force CUTLASS linear selection and emulate its unsupported FP4 GEMM."""
+    """Allow the CUTLASS layout on pre-Blackwell and emulate its FP4 GEMM."""
     import torch
 
     import vllm.model_executor.kernels.linear as linear_mod
@@ -118,6 +119,77 @@ def install_pre_blackwell_nvfp4_patch(act_quant_backend: str) -> None:
         return CutlassNvFp4LinearKernel(config)
 
     act_quant_backend_from_cli = act_quant_backend
+
+    # The fallback below does not invoke a CUTLASS FP4 kernel, but the normal
+    # constructor checks hardware support before the replacement operation can
+    # run. Keep CUTLASS's layout/weight preparation while permitting the
+    # fallback on pre-Blackwell GPUs such as A40.
+    CutlassNvFp4LinearKernel.is_supported = classmethod(
+        lambda cls, compute_capability=None: (True, None)
+    )
+
+    original_process_weights = CutlassNvFp4LinearKernel.process_weights_after_loading
+
+    def fallback_process_weights(self: Any, layer: Any) -> None:
+        """Prepare CUTLASS-formatted weights and cache their dense fallback."""
+        original_process_weights(self, layer)
+        one = torch.ones((), dtype=torch.float32, device=layer.weight.device)
+        layer.nvfp4_fallback_weight = dequantize_to_dtype(
+            layer.weight.data,
+            layer.weight_scale.data,
+            one,
+            torch.bfloat16,
+            block_size=16,
+            swizzle=True,
+        )
+
+    def fallback_apply_weights(
+        self: Any,
+        layer: Any,
+        x: torch.Tensor,
+        bias: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Torch-only NVFP4 linear path for GPUs without FP4 quant kernels."""
+        output_size = layer.output_size_per_partition
+        output_shape = [*x.shape[:-1], output_size]
+        x_2d = x.reshape(-1, x.shape[-1])
+        blocks = x_2d.float().reshape(x_2d.shape[0], -1, 16)
+        block_max = blocks.abs().amax(dim=-1, keepdim=True)
+        normalized = torch.where(
+            block_max == 0, torch.zeros_like(blocks), blocks * (6.0 / block_max)
+        )
+        magnitude = normalized.abs()
+        fp4 = torch.where(
+            magnitude > 5.0,
+            6.0,
+            torch.where(
+                magnitude >= 3.5,
+                4.0,
+                torch.where(
+                    magnitude > 2.5,
+                    3.0,
+                    torch.where(
+                        magnitude >= 1.75,
+                        2.0,
+                        torch.where(
+                            magnitude > 1.25,
+                            1.5,
+                            torch.where(magnitude >= 0.75, 1.0, 0.5),
+                        ),
+                    ),
+                ),
+            ),
+        )
+        fp4 = torch.where(magnitude <= 0.25, 0.0, fp4) * normalized.sign()
+        x_dq = (fp4 * (block_max / 6.0)).reshape_as(x_2d).to(dtype=x.dtype)
+        out = torch.matmul(x_dq, layer.nvfp4_fallback_weight.t())
+        out = cutlass_mod.slice_nvfp4_output(out * layer.alpha, output_size)
+        if bias is not None:
+            out = out + bias
+        return out.view(*output_shape)
+
+    CutlassNvFp4LinearKernel.process_weights_after_loading = fallback_process_weights
+    CutlassNvFp4LinearKernel.apply_weights = fallback_apply_weights
 
     # cutlass.py imported this symbol directly, so patch its module-local name.
     cutlass_mod.cutlass_scaled_fp4_mm = fallback_cutlass_scaled_fp4_mm
@@ -278,17 +350,24 @@ def main() -> None:
     imported_vllm = Path(__import__("vllm").__file__).resolve()
     print(f"vLLM import: {imported_vllm}")
 
-    if is_nvfp4:
+    import torch
+
+    compute_capability = torch.cuda.get_device_capability()
+    sm = compute_capability[0] * 10 + compute_capability[1]
+    print(f"GPU compute capability: sm_{sm}")
+
+    if sm < 100 and is_nvfp4:
         install_pre_blackwell_nvfp4_patch(args.act_quant_backend)
         print(
-            "Runtime patch installed: NVFP4 linear=CUTLASS, "
-            "CUTLASS FP4 GEMM=dequantize+torch.matmul fallback, "
+            "Runtime patch installed: NVFP4 linear=CUTLASS layout, "
+            "activation quantization and GEMM=torch fallback, "
             f"activation backend={args.act_quant_backend}"
         )
+    elif is_nvfp4:
+        print("Blackwell-or-newer GPU detected; runtime NVFP4 patch is disabled")
     else:
         print("Non-NVFP4 model detected; runtime NVFP4 patch is disabled")
 
-    import torch
     from vllm import LLM, SamplingParams
     from vllm.benchmarks.datasets import RandomDataset
     from vllm.tokenizers import get_tokenizer

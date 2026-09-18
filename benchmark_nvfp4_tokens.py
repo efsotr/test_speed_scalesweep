@@ -295,7 +295,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--warmup-requests",
         type=nonnegative_int,
-        default=1,
+        default=16,
         help="Warm-up requests excluded from timing; 0 disables warm-up",
     )
     parser.add_argument(

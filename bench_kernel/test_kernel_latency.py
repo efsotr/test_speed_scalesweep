@@ -31,21 +31,35 @@ from vllm.model_executor.layers.quantization.utils.nvfp4_emulation_utils import 
 ACT_QUANT_BACKENDS = (
     "cutlass",
     "scalesweep_mse",
+    "scalesweep_mse_wo_acc",
     "scalesweep_mse128",
     "scalesweep",
+    "scalesweep_wo_acc",
     "scalesweep128",
+)
+DEFAULT_BACKENDS = (
+    "cutlass",
+    "scalesweep_mse",
+    "scalesweep_mse_wo_acc",
+    "scalesweep",
+    "scalesweep_wo_acc",
 )
 BATCH_SIZES = (1,) + tuple(1 << exponent for exponent in range(3, 14))
 HIDDEN_SIZE = 4096
 RESULT_PATH = Path("test_kernel_latency.json")
 SCALESWEEP_BACKENDS = frozenset(
-    {"scalesweep", "scalesweep128", "scalesweep_mse", "scalesweep_mse128"}
+    {
+        "scalesweep", "scalesweep_wo_acc", "scalesweep128",
+        "scalesweep_mse", "scalesweep_mse_wo_acc", "scalesweep_mse128",
+    }
 )
 BACKEND_OPS = {
     "cutlass": ("_C", "scaled_fp4_quant"),
     "scalesweep_mse": ("vllm", "scalesweep_mse_nvfp4_quant"),
+    "scalesweep_mse_wo_acc": ("vllm", "scalesweep_mse_wo_acc_nvfp4_quant"),
     "scalesweep_mse128": ("vllm", "scalesweep_mse128_nvfp4_quant"),
     "scalesweep": ("vllm", "scalesweep_nvfp4_quant"),
+    "scalesweep_wo_acc": ("vllm", "scalesweep_wo_acc_nvfp4_quant"),
     "scalesweep128": ("vllm", "scalesweep128_nvfp4_quant"),
 }
 
@@ -142,7 +156,7 @@ def measure_latency(
 
 
 def run_benchmark(
-    backends: Sequence[str] = ACT_QUANT_BACKENDS,
+    backends: Sequence[str] = DEFAULT_BACKENDS,
     batch_sizes: Sequence[int] = BATCH_SIZES,
     hidden_size: int = HIDDEN_SIZE,
     rep: int = 20,
@@ -202,7 +216,7 @@ def parse_args() -> argparse.Namespace:
         "--backends",
         nargs="+",
         choices=ACT_QUANT_BACKENDS,
-        default=ACT_QUANT_BACKENDS,
+        default=DEFAULT_BACKENDS,
         help="Activation-quantization backends to measure.",
     )
     parser.add_argument(

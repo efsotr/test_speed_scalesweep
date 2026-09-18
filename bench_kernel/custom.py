@@ -32,15 +32,21 @@ def nvfp4_quant(
 
     try:
         from . import scalesweep_mse_nvfp4_utils as mse
+        from . import scalesweep_mse_nvfp4_utils_wo_acc as mse_wo_acc
         from . import scalesweep_nvfp4_utils as sweep
+        from . import scalesweep_nvfp4_utils_wo_acc as sweep_wo_acc
     except ImportError:  # Allows `uv run python bench_kernel/test_kernel_latency.py`.
         import scalesweep_mse_nvfp4_utils as mse
+        import scalesweep_mse_nvfp4_utils_wo_acc as mse_wo_acc
         import scalesweep_nvfp4_utils as sweep
+        import scalesweep_nvfp4_utils_wo_acc as sweep_wo_acc
 
     implementations = {
         "scalesweep": sweep.scalesweep_nvfp4_quant_impl,
+        "scalesweep_wo_acc": sweep_wo_acc.scalesweep_nvfp4_quant_impl,
         "scalesweep128": sweep.scalesweep128_nvfp4_quant_impl,
         "scalesweep_mse": mse.scalesweep_mse_nvfp4_quant_impl,
+        "scalesweep_mse_wo_acc": mse_wo_acc.scalesweep_mse_nvfp4_quant_impl,
         "scalesweep_mse128": mse.scalesweep_mse128_nvfp4_quant_impl,
     }
     try:

@@ -1,11 +1,11 @@
-"""Measure CUDA-graph latency of vLLM NVFP4 activation quantizers.
+"""Measure eager and CUDA-graph latency of NVFP4 activation quantizers.
 
 Run with the project environment, for example:
 
     CUDA_MODULE_LOADING=LAZY uv run python test_kernel_latency.py
 
-``act_quant_ops_latency`` and ``act_quant_ops_quant_error`` map backend name
-and batch size to mean latency in milliseconds and dequantized MSE respectively.
+The two latency mappings and ``act_quant_ops_quant_error`` map backend name and
+batch size to mean latency in milliseconds and dequantized MSE respectively.
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 import torch
-from triton.testing import do_bench_cudagraph
+from triton.testing import do_bench, do_bench_cudagraph
 try:
     from .custom import nvfp4_quant
 except ImportError:  # Allows `uv run python bench_kernel/test_kernel_latency.py`.
@@ -57,7 +57,8 @@ BACKEND_OPS = {
 }
 
 # Populated by ``run_benchmark``. Values are mean latency in milliseconds.
-act_quant_ops_latency: dict[str, dict[int, float]] = {}
+act_quant_ops_latency_do_bench: dict[str, dict[int, float]] = {}
+act_quant_ops_latency_do_bench_cudagraph: dict[str, dict[int, float]] = {}
 act_quant_ops_quant_error: dict[str, dict[int, float]] = {}
 
 
@@ -113,9 +114,10 @@ def measure_latency(
     backend: str,
     batch_size: int,
     hidden_size: int,
+    warmup: int,
     rep: int,
-) -> tuple[float, float]:
-    """Return CUDA-graph latency (ms) and dequantized MSE for one shape."""
+) -> tuple[float, float, float]:
+    """Return eager/graph latency (ms) and dequantized MSE for one shape."""
     activations = torch.randn(
         (batch_size, hidden_size), device="cuda", dtype=torch.bfloat16
     )
@@ -133,25 +135,35 @@ def measure_latency(
 
     # This is the same public vLLM dispatch path used by NVFP4 linear kernels.
     # The swizzled scale-factor layout is the CUTLASS NVFP4 GEMM layout.
-    latency_ms = float(
-        do_bench_cudagraph(
-            lambda: nvfp4_quant(
-                activations,
-                input_global_scale_inv,
-                is_sf_swizzled_layout=True,
-                backend=backend,
-            ),
+    quantize = lambda: nvfp4_quant(
+        activations,
+        input_global_scale_inv,
+        is_sf_swizzled_layout=True,
+        backend=backend,
+    )
+    do_bench_latency_ms = float(
+        do_bench(
+            quantize,
+            warmup=warmup,
             rep=rep,
             return_mode="mean",
         )
     )
-    return latency_ms, error_mse
+    cudagraph_latency_ms = float(
+        do_bench_cudagraph(
+            quantize,
+            rep=rep,
+            return_mode="mean",
+        )
+    )
+    return do_bench_latency_ms, cudagraph_latency_ms, error_mse
 
 
 def run_benchmark(
     backends: Sequence[str] = DEFAULT_BACKENDS,
     batch_sizes: Sequence[int] = BATCH_SIZES,
     hidden_size: int = HIDDEN_SIZE,
+    warmup: int = 10,
     rep: int = 20,
 ) -> dict[str, object]:
     """Run all requested shapes and return latency, error, and op availability."""
@@ -159,8 +171,8 @@ def run_benchmark(
         raise RuntimeError("A CUDA device is required for this benchmark.")
     if hidden_size <= 0 or hidden_size % 16:
         raise ValueError("hidden_size must be a positive multiple of 16 for NVFP4.")
-    if rep <= 0:
-        raise ValueError("rep must be positive.")
+    if warmup <= 0 or rep <= 0:
+        raise ValueError("warmup and rep must be positive.")
 
     for backend in backends:
         if backend not in ACT_QUANT_BACKENDS:
@@ -175,30 +187,41 @@ def run_benchmark(
             "NVFP4 activation quantization requires a Blackwell-or-newer "
             f"GPU (SM100+); found {torch.cuda.get_device_name()} (SM{major}{minor})."
         )
-    act_quant_ops_latency.clear()
+    act_quant_ops_latency_do_bench.clear()
+    act_quant_ops_latency_do_bench_cudagraph.clear()
     act_quant_ops_quant_error.clear()
     for backend in backends:
-        backend_latency: dict[int, float] = {}
+        backend_do_bench_latency: dict[int, float] = {}
+        backend_cudagraph_latency: dict[int, float] = {}
         backend_error: dict[int, float] = {}
-        act_quant_ops_latency[backend] = backend_latency
+        act_quant_ops_latency_do_bench[backend] = backend_do_bench_latency
+        act_quant_ops_latency_do_bench_cudagraph[backend] = (
+            backend_cudagraph_latency
+        )
         act_quant_ops_quant_error[backend] = backend_error
         for batch_size in batch_sizes:
             if batch_size <= 0:
                 raise ValueError("batch sizes must be positive.")
-            latency_ms, error_mse = measure_latency(
-                backend, batch_size, hidden_size, rep
+            do_bench_latency_ms, cudagraph_latency_ms, error_mse = measure_latency(
+                backend, batch_size, hidden_size, warmup, rep
             )
-            backend_latency[batch_size] = latency_ms
+            backend_do_bench_latency[batch_size] = do_bench_latency_ms
+            backend_cudagraph_latency[batch_size] = cudagraph_latency_ms
             backend_error[batch_size] = error_mse
             print(
                 f"{backend:18s} batch={batch_size:4d}: "
-                f"{latency_ms:.4f} ms, MSE={error_mse:.8g}"
+                f"do_bench={do_bench_latency_ms:.4f} ms, "
+                f"cudagraph={cudagraph_latency_ms:.4f} ms, "
+                f"MSE={error_mse:.8g}"
             )
 
     return {
         "backend_available": backend_available,
         "fp8_scale_max": {backend: fp8_scale_max(backend) for backend in backends},
-        "act_quant_ops_latency": act_quant_ops_latency,
+        "act_quant_ops_latency_do_bench": act_quant_ops_latency_do_bench,
+        "act_quant_ops_latency_do_bench_cudagraph": (
+            act_quant_ops_latency_do_bench_cudagraph
+        ),
         "act_quant_ops_quant_error_mse": act_quant_ops_quant_error,
     }
 
@@ -221,6 +244,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--hidden-size", type=int, default=HIDDEN_SIZE)
     parser.add_argument(
+        "--warmup",
+        type=int,
+        default=10,
+        help="Target do_bench warmup time in milliseconds.",
+    )
+    parser.add_argument(
         "--rep",
         type=int,
         default=20,
@@ -241,6 +270,7 @@ def main() -> None:
         backends=args.backends,
         batch_sizes=args.batch_sizes,
         hidden_size=args.hidden_size,
+        warmup=args.warmup,
         rep=args.rep,
     )
     args.output.write_text(json.dumps(results, indent=2) + "\n", encoding="utf-8")

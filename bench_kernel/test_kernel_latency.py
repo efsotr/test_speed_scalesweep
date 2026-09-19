@@ -39,8 +39,8 @@ DEFAULT_BACKENDS = (
     "scalesweep_mse_reference",
 )
 BATCH_SIZES = (1,) + tuple(1 << exponent for exponent in range(3, 14))
-HIDDEN_SIZE = 4096
-RESULT_PATH = Path("test_kernel_latency.json")
+HIDDEN_SIZE = 8192
+RESULT_PATH = Path(f"test_kernel_latency_dim{HIDDEN_SIZE}.json")
 SCALESWEEP_BACKENDS = frozenset(
     {
         "scalesweep_mse",

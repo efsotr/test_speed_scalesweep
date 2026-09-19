@@ -21,22 +21,24 @@ def nvfp4_quant(
     if input.shape[-1] % 16:
         raise ValueError("the last input dimension must be a multiple of 16")
 
-    if backend == "cutlass":
+    if backend in {"cutlass", "vllm"}:
         return vllm_ops.scaled_fp4_quant(
             input,
             input_global_scale,
             is_sf_swizzled_layout,
-            backend=backend,
+            backend="cutlass",
             padded_n=padded_n,
         )
 
     try:
         from . import scalesweep_mse_nvfp4_utils as mse
+        from . import scalesweep_mse_reference_nvfp4_utils as mse_reference
         from . import scalesweep_mse_nvfp4_utils_wo_acc as mse_wo_acc
         from . import scalesweep_nvfp4_utils as sweep
         from . import scalesweep_nvfp4_utils_wo_acc as sweep_wo_acc
     except ImportError:  # Allows `uv run python bench_kernel/test_kernel_latency.py`.
         import scalesweep_mse_nvfp4_utils as mse
+        import scalesweep_mse_reference_nvfp4_utils as mse_reference
         import scalesweep_mse_nvfp4_utils_wo_acc as mse_wo_acc
         import scalesweep_nvfp4_utils as sweep
         import scalesweep_nvfp4_utils_wo_acc as sweep_wo_acc
@@ -46,6 +48,7 @@ def nvfp4_quant(
         "scalesweep_wo_acc": sweep_wo_acc.scalesweep_nvfp4_quant_impl,
         "scalesweep128": sweep.scalesweep128_nvfp4_quant_impl,
         "scalesweep_mse": mse.scalesweep_mse_nvfp4_quant_impl,
+        "scalesweep_mse_reference": mse_reference.scalesweep_mse_nvfp4_quant_impl,
         "scalesweep_mse_wo_acc": mse_wo_acc.scalesweep_mse_nvfp4_quant_impl,
         "scalesweep_mse128": mse.scalesweep_mse128_nvfp4_quant_impl,
     }
